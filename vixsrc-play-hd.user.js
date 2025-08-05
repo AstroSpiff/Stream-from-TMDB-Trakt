@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         VixSrc Play HD – Trakt Anchor Observer (pushState & replaceState fix)
+// @name         VixSrc Play HD – Trakt Anchor Observer + Detail Pages
 // @namespace    http://tampermonkey.net/
-// @version      1.13
-// @description  Aggiunge un pallino rosso ▶ in basso-destra su film & episodi di serie TV in Trakt, intercettando SPA pushState/replaceState e DOM mutations.  
+// @version      1.14
+// @description  ▶ pallino rosso in basso-destra su film & episodi Trakt (liste SPA + pagine dettaglio)  
 // @match        https://trakt.tv/*  
 // @grant        none  
 // ==/UserScript==
@@ -40,58 +40,83 @@
   // ◆ Inietta il pulsante se non già presente
   function injectCircle(container, url) {
     if (!container || container.querySelector('.vix-circle-btn')) return;
-    container.style.position = 'relative';
+    if (getComputedStyle(container).position === 'static') {
+      container.style.position = 'relative';
+    }
     container.appendChild(createCircleBtn(url));
   }
 
-  // ◆ Scarica e parsifica la pagina di dettaglio Trakt per estrarre TMDB ID
-  async function fetchTmdbIdFromDetailPage(path) {
-    try {
-      const res = await fetch(path, { credentials: 'include' });
-      const txt = await res.text();
-      const doc = new DOMParser().parseFromString(txt, 'text/html');
-      const el  = doc.querySelector('a[href*="themoviedb.org/movie/"], a[href*="themoviedb.org/tv/"]');
-      if (!el) return null;
-      const m = el.href.match(/themoviedb\.org\/(?:movie|tv)\/(\d+)/);
-      return m ? m[1] : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // ◆ Processa ogni <a> “movie” o “episode”
+  // ◆ Processa ogni <a> “movie” o “episode” nelle liste/dashboard
   async function processAnchor(a) {
     if (a.__vix_processed) return;
     a.__vix_processed = true;
 
-    const url = new URL(a.href, location.origin);
-    const path = url.pathname;
-    let outUrl = null;
+    const href = a.getAttribute('href');
+    // solo link interni Trakt
+    if (!href.startsWith('/movies/') && !href.startsWith('/shows/')) return;
 
-    // — Film
-    if (/^\/movies\/[^/]+/.test(path)) {
-      const tmdbId = await fetchTmdbIdFromDetailPage(path);
-      if (tmdbId) {
-        outUrl = `https://vixsrc.to/movie/${tmdbId}`;
-      }
-    }
-    // — Episodio
-    const epMatch = path.match(/^\/shows\/[^/]+\/seasons\/(\d+)\/episodes\/(\d+)/);
-    if (!outUrl && epMatch) {
-      const season  = epMatch[1];
-      const episode = epMatch[2];
-      const tmdbShowId = await fetchTmdbIdFromDetailPage(path);
-      if (tmdbShowId) {
-        outUrl = `https://vixsrc.to/tv/${tmdbShowId}/${season}/${episode}`;
-      }
-    }
-    if (!outUrl) return;
-
-    // trova il contenitore giusto: poster.with-overflow, fanart, poster
+    // container candidato
     const container = a.closest('div.poster.with-overflow')
                    || a.closest('div.fanart')
                    || a.closest('div.poster');
-    injectCircle(container, outUrl);
+
+    // se già dentro una pagina dettaglio, skip
+    if (!container) return;
+
+    // Estrai la path
+    const path = href.split('?')[0];
+
+    // — Film
+    if (/^\/movies\/[^/]+/.test(path)) {
+      // chiamo il dettaglio in pagina per recuperare TMDB ID
+      const el = document.querySelector('a[href*="themoviedb.org/movie/"]');
+      if (el) {
+        const m = el.href.match(/themoviedb\.org\/movie\/(\d+)/);
+        if (m) {
+          injectCircle(container, `https://vixsrc.to/movie/${m[1]}`);
+          return;
+        }
+      }
+      // fallback fetch se non in pagina (liste/dashboard)
+      const traktId = a.closest('[data-movie-id]')?.getAttribute('data-movie-id');
+      if (traktId) {
+        try {
+          const res = await fetch(`/movies/${traktId}`,{credentials:'include'});
+          const txt = await res.text();
+          const doc = new DOMParser().parseFromString(txt,'text/html');
+          const el2 = doc.querySelector('a[href*="themoviedb.org/movie/"]');
+          const m2 = el2 && el2.href.match(/themoviedb\.org\/movie\/(\d+)/);
+          if (m2) injectCircle(container, `https://vixsrc.to/movie/${m2[1]}`);
+        } catch {}
+      }
+      return;
+    }
+
+    // — Episodio
+    const epMatch = path.match(/^\/shows\/[^/]+\/seasons\/(\d+)\/episodes\/(\d+)/);
+    if (epMatch) {
+      // prova in pagina
+      const el = document.querySelector('a[href*="themoviedb.org/tv/"]');
+      if (el) {
+        const m = el.href.match(/themoviedb\.org\/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
+        if (m) {
+          injectCircle(container, `https://vixsrc.to/tv/${m[1]}/${m[2]}/${m[3]}`);
+          return;
+        }
+      }
+      // fallback fetch
+      const epId = a.closest('[data-episode-id]')?.getAttribute('data-episode-id');
+      if (epId) {
+        try {
+          const res = await fetch(`/episodes/${epId}`,{credentials:'include'});
+          const txt = await res.text();
+          const doc = new DOMParser().parseFromString(txt,'text/html');
+          const el2 = doc.querySelector('a[href*="themoviedb.org/tv/"]');
+          const m2 = el2 && el2.href.match(/themoviedb\.org\/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
+          if (m2) injectCircle(container, `https://vixsrc.to/tv/${m2[1]}/${m2[2]}/${m2[3]}`);
+        } catch {}
+      }
+    }
   }
 
   // ◆ Scansiona tutti gli <a> rilevanti già presenti
@@ -99,16 +124,49 @@
     document.querySelectorAll('a[href^="/movies/"], a[href^="/shows/"]').forEach(processAnchor);
   }
 
+  // ── Aggiunge anche direttamente sulle pagine di dettaglio, senza click su <a>
+  function scanDetailPage() {
+    const path = location.pathname.split('?')[0];
+
+    // — DETTAGLIO FILM
+    if (/^\/movies\/[^/]+/.test(path)) {
+      const el = document.querySelector('a[href*="themoviedb.org/movie/"]');
+      const poster = document.querySelector('.sidebar.sticky.posters .poster.with-overflow');
+      if (el && poster) {
+        const m = el.href.match(/themoviedb\.org\/movie\/(\d+)/);
+        if (m) injectCircle(poster, `https://vixsrc.to/movie/${m[1]}`);
+      }
+    }
+
+    // — DETTAGLIO EPISODIO
+    if (/^\/shows\/[^/]+\/seasons\/\d+\/episodes\/\d+/.test(path)) {
+      const el = document.querySelector('a[href*="themoviedb.org/tv/"]');
+      const poster = document.querySelector('.sidebar.sticky.posters .poster.with-overflow');
+      if (el && poster) {
+        const m = el.href.match(/themoviedb\.org\/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
+        if (m) injectCircle(poster, `https://vixsrc.to/tv/${m[1]}/${m[2]}/${m[3]}`);
+      }
+    }
+  }
+
   // ── Hook SPA navigation: pushState + replaceState ────────────────────────
   ['pushState','replaceState'].forEach(fn => {
     const orig = history[fn];
     history[fn] = function(...args) {
       const ret = orig.apply(this, args);
-      setTimeout(scanAllAnchors, 300);
+      setTimeout(() => {
+        scanDetailPage();
+        scanAllAnchors();
+      }, 300);
       return ret;
     };
   });
-  window.addEventListener('popstate', () => setTimeout(scanAllAnchors, 300));
+  window.addEventListener('popstate', () => {
+    setTimeout(() => {
+      scanDetailPage();
+      scanAllAnchors();
+    }, 300);
+  });
 
   // ── Observer per intercettare nuovi <a> nel DOM ──────────────────────────
   const observer = new MutationObserver(muts => {
@@ -126,6 +184,11 @@
   observer.observe(document.body, { childList: true, subtree: true });
 
   // ── Esegui al caricamento iniziale ────────────────────────────────────────
-  window.addEventListener('load', () => setTimeout(scanAllAnchors, 300));
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      scanDetailPage();
+      scanAllAnchors();
+    }, 300);
+  });
 
 })();
