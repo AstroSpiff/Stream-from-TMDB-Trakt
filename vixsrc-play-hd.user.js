@@ -46,6 +46,28 @@
     container.appendChild(createCircleBtn(url));
   }
 
+  // ◆ Cache delle liste TMDB e verifica presenza
+  const tmdbCache = { movie: null, tv: null };
+  async function tmdbExists(type, id, season, ep) {
+    const url = type === 'movie'
+      ? 'https://raw.githubusercontent.com/nzo66/TV/refs/heads/main/film.m3u'
+      : 'https://raw.githubusercontent.com/nzo66/TV/refs/heads/main/serie.m3u';
+    if (!tmdbCache[type]) {
+      try {
+        const res = await fetch(url);
+        tmdbCache[type] = await res.text();
+      } catch {
+        tmdbCache[type] = '';
+      }
+    }
+    const list = tmdbCache[type];
+    if (type === 'movie') {
+      return list.includes(`/movie/${id}/`);
+    } else {
+      return list.includes(`/tv/${id}/${season}/${ep}`);
+    }
+  }
+
   // ◆ Processa ogni <a> “movie” o “episode” nelle liste/dashboard
   async function processAnchor(a) {
     if (a.__vix_processed) return;
@@ -72,7 +94,7 @@
       const el = document.querySelector('a[href*="themoviedb.org/movie/"]');
       if (el) {
         const m = el.href.match(/themoviedb\.org\/movie\/(\d+)/);
-        if (m) {
+        if (m && await tmdbExists('movie', m[1])) {
           injectCircle(container, `https://vixsrc.to/movie/${m[1]}`);
           return;
         }
@@ -86,7 +108,8 @@
           const doc = new DOMParser().parseFromString(txt,'text/html');
           const el2 = doc.querySelector('a[href*="themoviedb.org/movie/"]');
           const m2 = el2 && el2.href.match(/themoviedb\.org\/movie\/(\d+)/);
-          if (m2) injectCircle(container, `https://vixsrc.to/movie/${m2[1]}`);
+          if (m2 && await tmdbExists('movie', m2[1]))
+            injectCircle(container, `https://vixsrc.to/movie/${m2[1]}`);
         } catch {}
       }
       return;
@@ -99,7 +122,7 @@
       const el = document.querySelector('a[href*="themoviedb.org/tv/"]');
       if (el) {
         const m = el.href.match(/themoviedb\.org\/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
-        if (m) {
+        if (m && await tmdbExists('tv', m[1], m[2], m[3])) {
           injectCircle(container, `https://vixsrc.to/tv/${m[1]}/${m[2]}/${m[3]}`);
           return;
         }
@@ -113,7 +136,8 @@
           const doc = new DOMParser().parseFromString(txt,'text/html');
           const el2 = doc.querySelector('a[href*="themoviedb.org/tv/"]');
           const m2 = el2 && el2.href.match(/themoviedb\.org\/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
-          if (m2) injectCircle(container, `https://vixsrc.to/tv/${m2[1]}/${m2[2]}/${m2[3]}`);
+          if (m2 && await tmdbExists('tv', m2[1], m2[2], m2[3]))
+            injectCircle(container, `https://vixsrc.to/tv/${m2[1]}/${m2[2]}/${m2[3]}`);
         } catch {}
       }
     }
@@ -134,7 +158,10 @@
       const poster = document.querySelector('.sidebar.sticky.posters .poster.with-overflow');
       if (el && poster) {
         const m = el.href.match(/themoviedb\.org\/movie\/(\d+)/);
-        if (m) injectCircle(poster, `https://vixsrc.to/movie/${m[1]}`);
+        if (m)
+          tmdbExists('movie', m[1]).then(ok => {
+            if (ok) injectCircle(poster, `https://vixsrc.to/movie/${m[1]}`);
+          });
       }
     }
 
@@ -144,7 +171,10 @@
       const poster = document.querySelector('.sidebar.sticky.posters .poster.with-overflow');
       if (el && poster) {
         const m = el.href.match(/themoviedb\.org\/tv\/(\d+)\/season\/(\d+)\/episode\/(\d+)/);
-        if (m) injectCircle(poster, `https://vixsrc.to/tv/${m[1]}/${m[2]}/${m[3]}`);
+        if (m)
+          tmdbExists('tv', m[1], m[2], m[3]).then(ok => {
+            if (ok) injectCircle(poster, `https://vixsrc.to/tv/${m[1]}/${m[2]}/${m[3]}`);
+          });
       }
     }
   }
@@ -161,12 +191,15 @@
       return ret;
     };
   });
-  window.addEventListener('popstate', () => {
+  function rescan() {
     setTimeout(() => {
       scanDetailPage();
       scanAllAnchors();
     }, 300);
-  });
+  }
+  window.addEventListener('popstate', rescan);
+  window.addEventListener('hashchange', rescan);
+  window.addEventListener('pageshow', rescan);
 
   // ── Observer per intercettare nuovi <a> nel DOM ──────────────────────────
   const observer = new MutationObserver(muts => {
@@ -184,11 +217,6 @@
   observer.observe(document.body, { childList: true, subtree: true });
 
   // ── Esegui al caricamento iniziale ────────────────────────────────────────
-  window.addEventListener('load', () => {
-    setTimeout(() => {
-      scanDetailPage();
-      scanAllAnchors();
-    }, 300);
-  });
+  window.addEventListener('load', rescan);
 
 })();
